@@ -175,24 +175,28 @@ static std::unordered_map<uint8_t, std::string> unicode_byte_to_utf8_map() {
     return map;
 }
 
-static std::unordered_map<std::string, uint8_t> unicode_utf8_to_byte_map() {
-    std::unordered_map<std::string, uint8_t> map;
+static std::unordered_map<uint32_t, uint8_t> unicode_utf8_to_byte_map() {
+    std::unordered_map<uint32_t, uint8_t> map;
     for (int ch = 0x21; ch <= 0x7E; ++ch) {  // u'!' to u'~'
         assert(0 <= ch && ch < 256);
-        map[unicode_cpt_to_utf8(ch)] = ch;
+        const auto & utf8              = unicode_cpt_to_utf8(ch);
+        map[*(const uint32_t *) &utf8] = ch;
     }
     for (int ch = 0xA1; ch <= 0xAC; ++ch) {  // u'¡' to u'¬'
         assert(0 <= ch && ch < 256);
-        map[unicode_cpt_to_utf8(ch)] = ch;
+        const auto & utf8              = unicode_cpt_to_utf8(ch);
+        map[*(const uint32_t *) &utf8] = ch;
     }
     for (int ch = 0xAE; ch <= 0xFF; ++ch) {  // u'®' to u'ÿ'
         assert(0 <= ch && ch < 256);
-        map[unicode_cpt_to_utf8(ch)] = ch;
+        const auto & utf8              = unicode_cpt_to_utf8(ch);
+        map[*(const uint32_t *) &utf8] = ch;
     }
     auto n = 0;
     for (int ch = 0; ch < 256; ++ch) {
-        if (map.find(unicode_cpt_to_utf8(ch)) == map.end()) {
-            map[unicode_cpt_to_utf8(256 + n)] = ch;
+        const auto & utf8 = unicode_cpt_to_utf8(256 + n);
+        if (map.find(*(const uint32_t *) &utf8) == map.end()) {
+            map[*(const uint32_t *) &utf8] = ch;
             ++n;
         }
     }
@@ -650,8 +654,8 @@ std::string unicode_byte_to_utf8(uint8_t byte) {
     return map.at(byte);
 }
 
-uint8_t unicode_utf8_to_byte(const std::string & utf8) {
-    static std::unordered_map<std::string, uint8_t> map = unicode_utf8_to_byte_map();
+uint8_t unicode_utf8_to_byte(uint32_t utf8) {
+    static std::unordered_map<uint32_t, uint8_t> map = unicode_utf8_to_byte_map();
     return map.at(utf8);
 }
 
