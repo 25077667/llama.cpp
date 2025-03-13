@@ -468,9 +468,9 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    LOG_INF("sampler seed: %u\n",     common_sampler_get_seed(smpl));
+    // LOG_INF("sampler seed: %u\n",     common_sampler_get_seed(smpl));
     LOG_INF("sampler params: \n%s\n", sparams.print().c_str());
-    LOG_INF("sampler chain: %s\n",    common_sampler_print(smpl).c_str());
+    LOG_INF("sampler chain: %s\n", common_sampler_print(smpl).c_str());  // TODO: use our print_chain
 
     LOG_INF("generate: n_ctx = %d, n_batch = %d, n_predict = %d, n_keep = %d\n", n_ctx, params.n_batch, params.n_predict, params.n_keep);
 
@@ -702,8 +702,6 @@ int main(int argc, char ** argv) {
             const llama_token id = common_sampler_sample(smpl, ctx, -1);
 
             common_sampler_accept(smpl, id, /* accept_grammar= */ true);
-
-            // LOG_DBG("last: %s\n", string_from(ctx, smpl->prev.to_vector()).c_str());
 
             embd.push_back(id);
 
