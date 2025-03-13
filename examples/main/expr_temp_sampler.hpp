@@ -28,7 +28,7 @@ enum class SamplerType {
     TYPICAL_P   = 6,
     TEMPERATURE = 7,
     XTC         = 8,
-    INFILL      = 9,
+    // INFILL      = 9, // Cuz we don't need it currently.
     PENALTIES   = 10,
     GRAMMAR     = 11,
     SOFTMAX     = 12,
@@ -97,7 +97,13 @@ template <> class SamplerUnit<SamplerType::DRY> : public SamplerBase<SamplerUnit
 
   public:
     SamplerUnit(int32_t context_size, float dry_multiplier, float dry_base, int32_t dry_allowed_length,
-                int32_t dry_penalty_last_n, const char ** seq_breakers, size_t num_breakers);
+                int32_t dry_penalty_last_n, const char ** seq_breakers, size_t num_breakers) :
+        SamplerUnit(nullptr, context_size, dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n,
+                    seq_breakers, num_breakers) {}
+
+    SamplerUnit(const llama_vocab * vocab, int32_t context_size, float dry_multiplier, float dry_base,
+                int32_t dry_allowed_length, int32_t dry_penalty_last_n, const char ** seq_breakers,
+                size_t num_breakers);
 
     constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
@@ -166,7 +172,10 @@ template <> class SamplerUnit<SamplerType::GRAMMAR> : public SamplerBase<Sampler
     // Always initialize with a pointer—even if nullptr.
     constexpr SamplerUnit(void * model, void * grammar) noexcept : model_(model), grammar_(grammar) {}
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    constexpr void apply(llama_token_data_array *) override {
+        // we do nothing here currently, cuz the testing code doesn't need it.
+        ;
+    }
 
     constexpr const char * getName() const override { return "Grammar"; }
 };
@@ -190,7 +199,7 @@ template <> class SamplerUnit<SamplerType::DIST> : public SamplerBase<SamplerUni
 
     std::mt19937 rng;
 
-    void apply_impl(llama_token_data_array * cur_p);
+    inline void apply_impl(llama_token_data_array * cur_p);
 
   public:
     SamplerUnit(uint32_t seed) noexcept;
@@ -204,83 +213,97 @@ template <> class SamplerUnit<SamplerType::DIST> : public SamplerBase<SamplerUni
 
 // GREEDY: dummy greedy selection; same as DIST.
 template <> class SamplerUnit<SamplerType::GREEDY> : public SamplerBase<SamplerUnit<SamplerType::GREEDY>> {
-    [[maybe_unused]] float dummy_param_;
   public:
-    SamplerUnit(float param) noexcept : dummy_param_(param) {}
+    constexpr SamplerUnit() noexcept {}
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    constexpr void apply(llama_token_data_array * cur_p) override {
+        cur_p->selected = 0;
+        for (size_t i = 1; i < cur_p->size; ++i) {
+            if (cur_p->data[i].logit > cur_p->data[cur_p->selected].logit) {
+                cur_p->selected = i;
+            }
+        }
+    }
 
     constexpr const char * getName() const override { return "Greedy"; }
 };
 
 // TYPICAL_P: filters tokens based on deviation from average.
 template <> class SamplerUnit<SamplerType::TYPICAL_P> : public SamplerBase<SamplerUnit<SamplerType::TYPICAL_P>> {
-    float typical_p_;
-    int   min_keep_;
-  public:
-    SamplerUnit(float typical_p, int min_keep) noexcept : typical_p_(typical_p), min_keep_(min_keep) {}
+    const float  p;
+    const size_t min_keep;
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    constexpr void apply_impl(llama_token_data_array * cur_p);
+  public:
+    constexpr SamplerUnit(float typical_p, size_t min_keep) noexcept : p(typical_p), min_keep(min_keep) {}
+
+    constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
     constexpr const char * getName() const override { return "Typical-P"; }
 };
 
 // TOP_P: filters tokens until cumulative probability reaches top_p.
 template <> class SamplerUnit<SamplerType::TOP_P> : public SamplerBase<SamplerUnit<SamplerType::TOP_P>> {
-    float top_p_;
-    int   min_keep_;
-  public:
-    SamplerUnit(float top_p, int min_keep) noexcept : top_p_(top_p), min_keep_(min_keep) {}
+    const float  p;
+    const size_t min_keep;
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    constexpr void apply_impl(llama_token_data_array * cur_p);
+
+  public:
+    constexpr SamplerUnit(float top_p, size_t min_keep) noexcept : p(top_p), min_keep(min_keep) {}
+
+    constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
     constexpr const char * getName() const override { return "Top-P"; }
 };
 
 // MIN_P: filters out tokens below a minimum probability.
 template <> class SamplerUnit<SamplerType::MIN_P> : public SamplerBase<SamplerUnit<SamplerType::MIN_P>> {
-    float min_p_;
-    int   min_keep_;
-  public:
-    SamplerUnit(float min_p, int min_keep) noexcept : min_p_(min_p), min_keep_(min_keep) {}
+    const float  p;
+    const size_t min_keep;
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    constexpr void apply_impl(llama_token_data_array * cur_p);
+  public:
+    SamplerUnit(float min_p, size_t min_keep) noexcept : p(min_p), min_keep(min_keep) {}
+
+    constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
     constexpr const char * getName() const override { return "Min-P"; }
 };
 
 // TEMPERATURE: scales probabilities by temperature.
 template <> class SamplerUnit<SamplerType::TEMPERATURE> : public SamplerBase<SamplerUnit<SamplerType::TEMPERATURE>> {
-    float temperature_;
-  public:
-    SamplerUnit(float temp) noexcept : temperature_(temp) {}
+    const float temp;
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    constexpr void apply_impl(llama_token_data_array * cur_p);
+
+  public:
+    constexpr SamplerUnit(float temp) noexcept : temp(temp) {}
+
+    constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
     constexpr const char * getName() const override { return "Temperature"; }
 };
 
-// XTC: multiplies probabilities by an XTC parameter.
 template <> class SamplerUnit<SamplerType::XTC> : public SamplerBase<SamplerUnit<SamplerType::XTC>> {
-    float xtc_param_;
-  public:
-    SamplerUnit(float xtc_param) noexcept : xtc_param_(xtc_param) {}
+    const float  probability;
+    const float  threshold;
+    const size_t min_keep;
 
-    constexpr void apply(llama_token_data_array *) override { ; }
+    const uint32_t seed;
+    uint32_t       seed_cur;
+
+    std::mt19937 rng;
+
+    constexpr void apply_impl(llama_token_data_array * cur_p);
+  public:
+    SamplerUnit(float p, float t, size_t min_keep, uint32_t seed) noexcept;
+
+    constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
+
+    constexpr void reset() override;
 
     constexpr const char * getName() const override { return "XTC"; }
-};
-
-// INFILL: boosts probabilities for specific tokens.
-template <> class SamplerUnit<SamplerType::INFILL> : public SamplerBase<SamplerUnit<SamplerType::INFILL>> {
-    std::vector<int> infill_tokens_;
-  public:
-    // Note: std::vector is not fully constexpr-friendly; placeholder implementation.
-    SamplerUnit(const std::vector<int> & infill_tokens) : infill_tokens_(infill_tokens) {}
-
-    constexpr void apply(llama_token_data_array *) override { ; }
-
-    constexpr const char * getName() const override { return "Infill"; }
 };
 
 //---------------------------------------------------------------------
@@ -353,8 +376,10 @@ struct CommonSamplingParams {
     static constexpr float typical_p          = 0.9f;
     static constexpr float top_p              = 0.8f;
     static constexpr float min_p              = 0.05f;
-    static constexpr float temp               = 1.0f;  // For test case 3.
-    static const int       min_keep           = 1;     // Default min_keep value.
+    static constexpr float temp               = 1.0f;   // For test case 3.
+    static const int       min_keep           = 1;      // Default min_keep value.
+    static constexpr float xtc_probability    = 0.00f;  // 0.0 = disabled
+    static constexpr float xtc_threshold      = 0.10f;  // > 0.5 disables XTC
 };
 
 void * model   = nullptr;  // Dummy model pointer.
@@ -370,11 +395,10 @@ auto filter_stack_temp_negative =
     SamplerUnit<SamplerType::DIST>(CommonSamplingParams::seed);
 //--- 2. Case: temp == 0.0 ---
 // Chain: Penalties, Grammar, then Greedy selection.
-auto filter_stack_temp_zero =
-    SamplerUnit<SamplerType::PENALTIES>(CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
-                                        CommonSamplingParams::frequency_penalty,
-                                        CommonSamplingParams::presence_penalty) |
-    SamplerUnit<SamplerType::GRAMMAR>(model, grammar) | SamplerUnit<SamplerType::GREEDY>(0.0f);
+auto filter_stack_temp_zero = SamplerUnit<SamplerType::PENALTIES>(
+                                  CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
+                                  CommonSamplingParams::frequency_penalty, CommonSamplingParams::presence_penalty) |
+                              SamplerUnit<SamplerType::GRAMMAR>(model, grammar) | SamplerUnit<SamplerType::GREEDY>();
 
 //--- 3. Case: temp > 0.0 ---
 // Chain: Penalties, Grammar, Top-K, Typical-P, Top-P, Min-P,
@@ -401,6 +425,8 @@ auto filter_stack_example_common =
     SamplerUnit<SamplerType::TYPICAL_P>(CommonSamplingParams::typical_p, CommonSamplingParams::min_keep) |
     SamplerUnit<SamplerType::TOP_P>(CommonSamplingParams::top_p, CommonSamplingParams::min_keep) |
     SamplerUnit<SamplerType::MIN_P>(CommonSamplingParams::min_p, CommonSamplingParams::min_keep) |
-    SamplerUnit<SamplerType::XTC>(1.5f) | SamplerUnit<SamplerType::TEMPERATURE>(CommonSamplingParams::temp);
+    SamplerUnit<SamplerType::XTC>(CommonSamplingParams::xtc_probability, CommonSamplingParams::xtc_threshold,
+                                  CommonSamplingParams::min_keep, CommonSamplingParams::seed) |
+    SamplerUnit<SamplerType::TEMPERATURE>(CommonSamplingParams::temp);
 
 #endif  // __SCC_EXAMPLE_MAIN_EXPR_TEMP_SAMPLER_HPP__

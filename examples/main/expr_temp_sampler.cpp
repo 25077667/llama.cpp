@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cfloat>
 #include <expr_temp_sampler.hpp>
 #include <unordered_map>
 #include <vector>
@@ -257,8 +258,8 @@ void SamplerUnit<SamplerType::DRY>::apply_impl(llama_token_data_array * cur_p) {
 }
 
 // Constructor for DRY SamplerUnit
-SamplerUnit<SamplerType::DRY>::SamplerUnit(int32_t context_size, float dry_multiplier, float dry_base,
-                                           int32_t dry_allowed_length, int32_t dry_penalty_last_n,
+SamplerUnit<SamplerType::DRY>::SamplerUnit(const llama_vocab * vocab, int32_t context_size, float dry_multiplier,
+                                           float dry_base, int32_t dry_allowed_length, int32_t dry_penalty_last_n,
                                            const char ** seq_breakers, size_t num_breakers) :
     dry_multiplier(dry_multiplier),
     dry_base(dry_base),
@@ -288,7 +289,9 @@ SamplerUnit<SamplerType::DRY>::SamplerUnit(int32_t context_size, float dry_multi
                 sequence_break.resize(MAX_CHAR_LEN);
             }
 
-            get_overlapping_token_sequences(llama_vocab(), sequence_break, dry_processed_breakers, MAX_SEQ_LEN);
+            static const auto & llama_vocab_default = llama_vocab();
+            const llama_vocab & vocab_ref           = (vocab) ? *vocab : llama_vocab_default;
+            get_overlapping_token_sequences(vocab_ref, sequence_break, dry_processed_breakers, MAX_SEQ_LEN);
         }
     }
 
@@ -496,7 +499,7 @@ static int llama_sample_dist(llama_token_data_array * cur_p, std::mt19937 & rng)
     return dist(rng);
 }
 
-void SamplerUnit<SamplerType::DIST>::apply_impl(llama_token_data_array * cur_p) {
+inline void SamplerUnit<SamplerType::DIST>::apply_impl(llama_token_data_array * cur_p) {
     softmax_intl(cur_p);
     cur_p->selected = llama_sample_dist(cur_p, rng);
 }
@@ -504,6 +507,210 @@ void SamplerUnit<SamplerType::DIST>::apply_impl(llama_token_data_array * cur_p) 
 SamplerUnit<SamplerType::DIST>::SamplerUnit(uint32_t seed) noexcept : seed(seed), seed_cur(get_rng_seed(seed)) {}
 
 constexpr void SamplerUnit<SamplerType::DIST>::reset() {
+    seed_cur = get_rng_seed(seed);
+    rng.seed(seed_cur);
+}
+
+constexpr void SamplerUnit<SamplerType::TYPICAL_P>::apply_impl(llama_token_data_array * cur_p) {
+    // Reference implementation:
+    // https://github.com/huggingface/transformers/compare/main...cimeister:typical-sampling:typical-pr
+    if (p >= 1.0f) {
+        return;
+    }
+
+    // Compute the softmax of logits and calculate entropy
+    softmax_intl(cur_p);
+
+    float entropy = 0.0f;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        entropy += -cur_p->data[i].p * logf(cur_p->data[i].p);
+    }
+
+    // Compute the absolute difference between negative log probability and entropy for each candidate
+    std::vector<float> shifted_scores;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        float shifted_score = fabsf(-logf(cur_p->data[i].p) - entropy);
+        shifted_scores.push_back(shifted_score);
+    }
+
+    // Sort tokens based on the shifted_scores and their corresponding indices
+    std::vector<size_t> indices(cur_p->size);
+    std::iota(indices.begin(), indices.end(), 0);
+
+    std::sort(indices.begin(), indices.end(),
+              [&](size_t a, size_t b) { return shifted_scores[a] < shifted_scores[b]; });
+
+    // Compute the cumulative probabilities
+    float  cum_sum  = 0.0f;
+    size_t last_idx = indices.size();
+
+    for (size_t i = 0; i < indices.size(); ++i) {
+        size_t idx = indices[i];
+        cum_sum += cur_p->data[idx].p;
+
+        // Check if the running sum is greater than typical or if we have kept at least min_keep tokens
+        if (cum_sum > p && i >= min_keep - 1) {
+            last_idx = i + 1;
+            break;
+        }
+    }
+
+    // Resize the output vector to keep only the locally typical tokens
+    std::vector<llama_token_data> cur_p_new;
+    for (size_t i = 0; i < last_idx; ++i) {
+        size_t idx = indices[i];
+        cur_p_new.push_back(cur_p->data[idx]);
+    }
+
+    // Replace the data in cur_p with the cur_p_new data
+    std::copy(cur_p_new.begin(), cur_p_new.end(), cur_p->data);
+    cur_p->size   = cur_p_new.size();
+    cur_p->sorted = false;
+}
+
+constexpr void SamplerUnit<SamplerType::TOP_P>::apply_impl(llama_token_data_array * cur_p) {
+    if (p >= 1.0f) {
+        return;
+    }
+
+    softmax_intl(cur_p);
+
+    // Compute the cumulative probabilities
+    float  cum_sum  = 0.0f;
+    size_t last_idx = cur_p->size;
+
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        cum_sum += cur_p->data[i].p;
+
+        // Check if the running sum is at least p or if we have kept at least min_keep tokens
+        // we set the last index to i+1 to indicate that the current iterate should be included in the set
+        if (cum_sum >= p && i + 1 >= min_keep) {
+            last_idx = i + 1;
+            break;
+        }
+    }
+
+    // Resize the output vector to keep only the top-p tokens
+    cur_p->size = last_idx;
+}
+
+constexpr void SamplerUnit<SamplerType::MIN_P>::apply_impl(llama_token_data_array * cur_p) {
+    if (p <= 0.0f || !cur_p->size) {
+        return;
+    }
+
+    bool min_p_applied = false;
+
+    // if the cur_p aren't sorted, try the unsorted implementation first
+    if (!cur_p->sorted) {
+        std::vector<llama_token_data> filtered_tokens;
+
+        float max_logit = -FLT_MAX;
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            max_logit = std::max(max_logit, cur_p->data[i].logit);
+        }
+        const float min_logit = max_logit + logf(p);  // min logit for p_i >= p * p_max
+
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            if (cur_p->data[i].logit >= min_logit) {
+                filtered_tokens.push_back(cur_p->data[i]);
+            }
+        }
+
+        // if we have enough values the operation was a success
+        if (filtered_tokens.size() >= min_keep) {
+            memcpy(cur_p->data, filtered_tokens.data(), filtered_tokens.size() * sizeof(llama_token_data));
+            cur_p->size   = filtered_tokens.size();
+            min_p_applied = true;
+        }
+    }
+
+    // if the cur_p are sorted or the unsorted implementation failed, use this implementation
+    if (!min_p_applied) {
+        // Sort the logits in descending order
+        if (!cur_p->sorted) {
+            std::sort(cur_p->data, cur_p->data + cur_p->size,
+                      [](const llama_token_data & a, const llama_token_data & b) { return a.logit > b.logit; });
+            cur_p->sorted = true;
+        }
+
+        const float min_logit = cur_p->data[0].logit + logf(p);  // min logit for p_i >= p * p_max
+        size_t      i         = 1;                               // first token always matches
+
+        for (; i < cur_p->size; ++i) {
+            if (cur_p->data[i].logit < min_logit && i >= min_keep) {
+                break;  // prob too small
+            }
+        }
+
+        // Resize the output vector to keep only the matching tokens
+        cur_p->size = i;
+    }
+}
+
+constexpr void SamplerUnit<SamplerType::TEMPERATURE>::apply_impl(llama_token_data_array * cur_p) {
+    if (temp <= 0.0f) {
+        // find the token with the highest logit and set the rest to -inf
+        size_t max_i = 0;
+        float  max_l = cur_p->data[0].logit;
+
+        for (size_t i = 1; i < cur_p->size; ++i) {
+            if (cur_p->data[i].logit > max_l) {
+                cur_p->data[max_i].logit = -INFINITY;
+                max_i                    = i;
+                max_l                    = cur_p->data[i].logit;
+            } else {
+                cur_p->data[i].logit = -INFINITY;
+            }
+        }
+
+        return;
+    }
+
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        cur_p->data[i].logit /= temp;
+    }
+}
+
+SamplerUnit<SamplerType::XTC>::SamplerUnit(float p, float t, size_t min_keep, uint32_t seed) noexcept :
+    probability(p),
+    threshold(t),
+    min_keep(min_keep),
+    seed(seed),
+    seed_cur(get_rng_seed(seed)),
+    rng(seed_cur) {}
+
+constexpr void SamplerUnit<SamplerType::XTC>::apply_impl(llama_token_data_array * cur_p) {
+    if (probability <= 0.0f || threshold > 0.5f || cur_p->size < 2) {
+        return;
+    }
+
+    std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
+    float                                 chance = distribution(rng);
+    if (chance > probability) {
+        return;
+    }
+
+    // in case it's not sorted/recalculated yet
+    softmax_intl(cur_p);
+
+    int pos_last = 0;
+
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (cur_p->data[i].p >= threshold) {
+            pos_last = i;
+        } else {
+            break;
+        }
+    }
+
+    if (cur_p->size - pos_last >= min_keep && pos_last > 0) {
+        cur_p->data += pos_last;
+        cur_p->size -= pos_last;
+    }
+}
+
+constexpr void SamplerUnit<SamplerType::XTC>::reset() {
     seed_cur = get_rng_seed(seed);
     rng.seed(seed_cur);
 }
