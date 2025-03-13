@@ -151,7 +151,7 @@ template <typename T> struct dynamic_ring_buffer : public ring_buffer_base<T> {
         }
     }
 
-    dynamic_ring_buffer() : dynamic_ring_buffer(0) {}
+    dynamic_ring_buffer() : dynamic_ring_buffer(4) {}
 
     // Inserts an element at the back of the ring buffer.
     void push_back(const T & value) {

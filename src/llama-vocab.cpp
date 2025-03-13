@@ -1200,11 +1200,23 @@ struct fragment_buffer_variant {
             GGML_ASSERT(_length >= 1);
             GGML_ASSERT(offset + length <= raw_text.length());
         }
+    
+    fragment_buffer_variant(std::string_view _raw_text, int64_t _offset, int64_t _length)
+    :
+        type(FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT),
+        token((llama_token) - 1),
+        raw_text(_raw_text),
+        offset(_offset),
+        length(_length){
+            GGML_ASSERT(_offset >= 0);
+            GGML_ASSERT(_length >= 1);
+            GGML_ASSERT(offset + length <= raw_text.length());
+        }
 
     const FRAGMENT_BUFFER_VARIANT_TYPE type;
     const llama_token token;
     const std::string _dummy;
-    const std::string & raw_text;
+    std::string_view raw_text;
     const uint64_t offset;
     const uint64_t length;
 };
@@ -1301,7 +1313,7 @@ struct llama_vocab::impl {
 
 
     std::vector<llama_token> tokenize(
-            const std::string & raw_text,
+            std::string_view raw_text,
                          bool   add_special,
                          bool   parse_special = false) const;
 
@@ -2324,7 +2336,7 @@ static std::string llama_decode_text(const std::string & text) {
 }
 
 std::vector<llama_token> llama_vocab::impl::tokenize(
-        const std::string & raw_text,
+        std::string_view raw_text,
         bool add_special,
         bool parse_special) const {
     GGML_ASSERT(tokenizer && "Tokenizer not initialized. Call llama_vocab::init_tokenizer() first.");
@@ -2399,7 +2411,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
                 }
                 for (const auto & fragment : fragment_buffer) {
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
-                        std::string text = fragment.raw_text.substr(fragment.offset, fragment.length);
+                        auto text = std::string(fragment.raw_text.substr(fragment.offset, fragment.length));
 
 #ifdef PRETOKENIZERDEBUG
                         LLAMA_LOG_WARN("TT: (%ld %ld %ld) '%s'\n", text.length(), fragment.offset, fragment.length, text.c_str());
@@ -2426,7 +2438,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
 
                 for (const auto & fragment : fragment_buffer) {
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
-                        std::string text = fragment.raw_text.substr(fragment.offset, fragment.length);
+                        auto text = std::string(fragment.raw_text.substr(fragment.offset, fragment.length));
 
 #ifdef PRETOKENIZERDEBUG
                         LLAMA_LOG_WARN("TT: (%ld %ld %ld) '%s'\n", text.length(), fragment.offset, fragment.length, text.c_str());
@@ -2452,7 +2464,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
 
                 for (const auto & fragment : fragment_buffer) {
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
-                        std::string text = fragment.raw_text.substr(fragment.offset, fragment.length);
+                        auto text = std::string(fragment.raw_text.substr(fragment.offset, fragment.length));
 #ifdef PRETOKENIZERDEBUG
                         LLAMA_LOG_WARN("TT: (%ld %ld %ld) '%s'\n", text.length(), fragment.offset, fragment.length, text.c_str());
 #endif
@@ -2479,7 +2491,7 @@ std::vector<llama_token> llama_vocab::impl::tokenize(
                 llm_tokenizer_rwkv_session session(vocab, *static_cast<const llm_tokenizer_rwkv *>(tokenizer.get()));
                 for (const auto & fragment : fragment_buffer) {
                     if (fragment.type == FRAGMENT_BUFFER_VARIANT_TYPE_RAW_TEXT) {
-                        std::string text = fragment.raw_text.substr(fragment.offset, fragment.length);
+                        auto text = std::string(fragment.raw_text.substr(fragment.offset, fragment.length));
 
 #ifdef PRETOKENIZERDEBUG
                         LLAMA_LOG_WARN("TT: (%ld %ld %ld) '%s'\n", text.length(), fragment.offset, fragment.length, text.c_str());
@@ -2986,6 +2998,11 @@ std::vector<llama_token> llama_vocab::tokenize(
         const std::string & raw_text,
         bool add_special,
         bool parse_special) const {
+    return pimpl->tokenize(raw_text, add_special, parse_special);
+}
+
+std::vector<llama_token> llama_vocab::tokenize(std::string_view raw_text, bool add_special,
+                                               bool parse_special) const {
     return pimpl->tokenize(raw_text, add_special, parse_special);
 }
 

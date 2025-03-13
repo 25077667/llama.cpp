@@ -3,13 +3,14 @@
 #include <expr_temp_sampler.hpp>
 #include <unordered_map>
 #include <vector>
+#include <cstring>
 
 #include "llama-vocab.h"
 #include "llama.h"
 #include "ring_buffer.hpp"
 
 static void get_overlapping_token_sequences(
-    const llama_vocab & vocab, const std::string & str,
+    const llama_vocab & vocab, const std::string_view & str,
     std::unordered_multimap<llama_token, std::vector<llama_token>> & token_sequences, int max_tail_len = -1) {
     for (llama_token token_id = 0; token_id < (llama_token) vocab.n_tokens(); token_id++) {
         std::string word = vocab.detokenize({ token_id }, true);
@@ -29,7 +30,7 @@ static void get_overlapping_token_sequences(
                     }
                 }
                 if (match) {
-                    std::vector<llama_token> tokenization = vocab.tokenize(str.substr(i), false, false);
+                    std::vector<llama_token> tokenization = vocab.tokenize(str.substr(0, i), false, false);
                     if (max_tail_len >= 0 && tokenization.size() > (size_t) max_tail_len) {
                         tokenization.resize(max_tail_len);
                     }
@@ -260,7 +261,7 @@ void SamplerUnit<SamplerType::DRY>::apply_impl(llama_token_data_array * cur_p) {
 // Constructor for DRY SamplerUnit
 SamplerUnit<SamplerType::DRY>::SamplerUnit(const llama_vocab * vocab, int32_t context_size, float dry_multiplier,
                                            float dry_base, int32_t dry_allowed_length, int32_t dry_penalty_last_n,
-                                           const char ** seq_breakers, size_t num_breakers) :
+                                           std::span<const std::string_view> seq_breakers) :
     dry_multiplier(dry_multiplier),
     dry_base(dry_base),
     dry_penalty_last_n(dry_penalty_last_n),
@@ -272,21 +273,21 @@ SamplerUnit<SamplerType::DRY>::SamplerUnit(const llama_vocab * vocab, int32_t co
 
     const bool dry_enabled = is_dry_enabled();
 
-    if (dry_enabled && seq_breakers != nullptr && num_breakers > 0) {
+    if (dry_enabled && !seq_breakers.empty()) {
         // Process sequence breakers
-        for (size_t i = 0; i < num_breakers; ++i) {
-            if (seq_breakers[i] == nullptr || std::strlen(seq_breakers[i]) == 0) {
+        for (size_t i = 0; i < seq_breakers.size(); ++i) {
+            if (seq_breakers[i].empty()) {
                 // Skip null or empty sequence breakers
                 continue;
             }
 
-            std::string sequence_break(seq_breakers[i]);
+            std::string_view sequence_break(seq_breakers[i]);
             if (sequence_break.empty()) {
                 continue;
             }
 
             if (sequence_break.size() > MAX_CHAR_LEN) {
-                sequence_break.resize(MAX_CHAR_LEN);
+                sequence_break = sequence_break.substr(0, MAX_CHAR_LEN);
             }
 
             static const auto & llama_vocab_default = llama_vocab();
@@ -299,7 +300,7 @@ SamplerUnit<SamplerType::DRY>::SamplerUnit(const llama_vocab * vocab, int32_t co
         dry_repeat_count.resize(effective_dry_penalty_last_n, 0);
         last_tokens = dynamic_ring_buffer<llama_token>(effective_dry_penalty_last_n);
     } else {
-        last_tokens = dynamic_ring_buffer<llama_token>(0);
+        last_tokens = dynamic_ring_buffer<llama_token>(4);
     }
 }
 

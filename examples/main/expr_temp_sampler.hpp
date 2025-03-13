@@ -10,6 +10,7 @@
 #include <numeric>
 #include <random>
 #include <ranges>
+#include <span>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -97,13 +98,12 @@ template <> class SamplerUnit<SamplerType::DRY> : public SamplerBase<SamplerUnit
 
   public:
     SamplerUnit(int32_t context_size, float dry_multiplier, float dry_base, int32_t dry_allowed_length,
-                int32_t dry_penalty_last_n, const char ** seq_breakers, size_t num_breakers) :
+                int32_t dry_penalty_last_n, std::span<const std::string_view> seq_breakers) :
         SamplerUnit(nullptr, context_size, dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n,
-                    seq_breakers, num_breakers) {}
+                    seq_breakers) {}
 
     SamplerUnit(const llama_vocab * vocab, int32_t context_size, float dry_multiplier, float dry_base,
-                int32_t dry_allowed_length, int32_t dry_penalty_last_n, const char ** seq_breakers,
-                size_t num_breakers);
+                int32_t dry_allowed_length, int32_t dry_penalty_last_n, std::span<const std::string_view> seq_breakers);
 
     constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
@@ -363,27 +363,33 @@ class SamplerChain {
 //
 // Assumed variables:
 struct CommonSamplingParams {
-    static const int       n_vocab            = 50000;
-    static const int       token_eos          = 2;
-    static const int       token_nl           = 10;
-    static const int       last_n_tokens_size = 64;
-    static constexpr float repeat_penalty     = 1.1f;
-    static constexpr float frequency_penalty  = 0.5f;
-    static constexpr float presence_penalty   = 0.3f;
-    static const bool      penalize_nl        = true;
-    static const int       seed               = 42;
-    static const int       top_k              = 40;
-    static constexpr float typical_p          = 0.9f;
-    static constexpr float top_p              = 0.8f;
-    static constexpr float min_p              = 0.05f;
-    static constexpr float temp               = 1.0f;   // For test case 3.
-    static const int       min_keep           = 1;      // Default min_keep value.
-    static constexpr float xtc_probability    = 0.00f;  // 0.0 = disabled
-    static constexpr float xtc_threshold      = 0.10f;  // > 0.5 disables XTC
+    static const int         n_vocab            = 50000;
+    static const int         token_eos          = 2;
+    static const int         token_nl           = 10;
+    static const int         last_n_tokens_size = 64;
+    static constexpr float   repeat_penalty     = 1.1f;
+    static constexpr float   frequency_penalty  = 0.5f;
+    static constexpr float   presence_penalty   = 0.3f;
+    static const bool        penalize_nl        = true;
+    static const int         seed               = 42;
+    static const int         top_k              = 40;
+    static constexpr float   typical_p          = 0.9f;
+    static constexpr float   top_p              = 0.8f;
+    static constexpr float   min_p              = 0.05f;
+    static constexpr float   temp               = 1.0f;   // For test case 3.
+    static const int         min_keep           = 1;      // Default min_keep value.
+    static constexpr float   xtc_probability    = 0.00f;  // 0.0 = disabled
+    static constexpr float   xtc_threshold      = 0.10f;  // > 0.5 disables XTC
+    static constexpr float   dry_multiplier     = 0.0f;
+    static constexpr int32_t dry_allowed_length = 2;
+    static constexpr float   dry_base           = 1.75f;
+    static constexpr int32_t dry_penalty_last_n = -1;
 };
 
-void * model   = nullptr;  // Dummy model pointer.
-void * grammar = nullptr;  // Dummy grammar pointer.
+void *                                             model                       = nullptr;  // Dummy model pointer.
+void *                                             grammar                     = nullptr;  // Dummy grammar pointer.
+static constexpr std::array<std::string_view, 4>   dry_sequence_breakers_array = { "\n", ":", "\"", "*" };
+static constexpr std::span<const std::string_view> dry_sequence_breakers       = dry_sequence_breakers_array;
 
 //--- 1. Case: temp < 0.0 ---
 // Chain: Penalties, Grammar, Softmax, then Distribution.
@@ -420,7 +426,10 @@ auto filter_stack_example_common =
     SamplerUnit<SamplerType::PENALTIES>(CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
                                         CommonSamplingParams::frequency_penalty,
                                         CommonSamplingParams::presence_penalty) |
-    // SamplerUnit<SamplerType::DRY>(0.9f) |
+    SamplerUnit<SamplerType::DRY>(nullptr, CommonSamplingParams::last_n_tokens_size,
+                                  CommonSamplingParams::dry_multiplier, CommonSamplingParams::dry_base,
+                                  CommonSamplingParams::dry_allowed_length, CommonSamplingParams::dry_penalty_last_n,
+                                  dry_sequence_breakers) |
     SamplerUnit<SamplerType::TOP_K>(CommonSamplingParams::top_k) |
     SamplerUnit<SamplerType::TYPICAL_P>(CommonSamplingParams::typical_p, CommonSamplingParams::min_keep) |
     SamplerUnit<SamplerType::TOP_P>(CommonSamplingParams::top_p, CommonSamplingParams::min_keep) |

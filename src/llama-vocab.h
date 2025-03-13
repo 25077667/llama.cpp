@@ -94,6 +94,8 @@ struct llama_vocab {
                          bool   add_special,
                          bool   parse_special = false) const;
 
+    std::vector<llama_token> tokenize(std::string_view raw_text, bool add_special, bool parse_special = false) const;
+
     // does not write null-terminator to buf
     int32_t token_to_piece(
                   llama_token   token,
