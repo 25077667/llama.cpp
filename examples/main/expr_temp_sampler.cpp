@@ -1,9 +1,9 @@
 #include <algorithm>
 #include <cfloat>
+#include <cstring>
 #include <expr_temp_sampler.hpp>
 #include <unordered_map>
 #include <vector>
-#include <cstring>
 
 #include "llama-vocab.h"
 #include "llama.h"
@@ -304,7 +304,7 @@ SamplerUnit<SamplerType::DRY>::SamplerUnit(const llama_vocab * vocab, int32_t co
     }
 }
 
-constexpr void SamplerUnit<SamplerType::TOP_K>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::TOP_K>::apply_impl(llama_token_data_array * cur_p) {
     int k = std::min(k_, (uint32_t) cur_p->size);
 
     // Sort scores in descending order
@@ -440,7 +440,7 @@ constexpr static inline void softmax_intl(llama_token_data_array * cur_p) {
     }
 }
 
-constexpr void SamplerUnit<SamplerType::SOFTMAX>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::SOFTMAX>::apply_impl(llama_token_data_array * cur_p) {
     return softmax_intl(cur_p);
 }
 
@@ -507,12 +507,12 @@ inline void SamplerUnit<SamplerType::DIST>::apply_impl(llama_token_data_array * 
 
 SamplerUnit<SamplerType::DIST>::SamplerUnit(uint32_t seed) noexcept : seed(seed), seed_cur(get_rng_seed(seed)) {}
 
-constexpr void SamplerUnit<SamplerType::DIST>::reset() {
+void SamplerUnit<SamplerType::DIST>::reset() {
     seed_cur = get_rng_seed(seed);
     rng.seed(seed_cur);
 }
 
-constexpr void SamplerUnit<SamplerType::TYPICAL_P>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::TYPICAL_P>::apply_impl(llama_token_data_array * cur_p) {
     // Reference implementation:
     // https://github.com/huggingface/transformers/compare/main...cimeister:typical-sampling:typical-pr
     if (p >= 1.0f) {
@@ -569,7 +569,7 @@ constexpr void SamplerUnit<SamplerType::TYPICAL_P>::apply_impl(llama_token_data_
     cur_p->sorted = false;
 }
 
-constexpr void SamplerUnit<SamplerType::TOP_P>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::TOP_P>::apply_impl(llama_token_data_array * cur_p) {
     if (p >= 1.0f) {
         return;
     }
@@ -595,7 +595,7 @@ constexpr void SamplerUnit<SamplerType::TOP_P>::apply_impl(llama_token_data_arra
     cur_p->size = last_idx;
 }
 
-constexpr void SamplerUnit<SamplerType::MIN_P>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::MIN_P>::apply_impl(llama_token_data_array * cur_p) {
     if (p <= 0.0f || !cur_p->size) {
         return;
     }
@@ -649,7 +649,7 @@ constexpr void SamplerUnit<SamplerType::MIN_P>::apply_impl(llama_token_data_arra
     }
 }
 
-constexpr void SamplerUnit<SamplerType::TEMPERATURE>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::TEMPERATURE>::apply_impl(llama_token_data_array * cur_p) {
     if (temp <= 0.0f) {
         // find the token with the highest logit and set the rest to -inf
         size_t max_i = 0;
@@ -681,7 +681,7 @@ SamplerUnit<SamplerType::XTC>::SamplerUnit(float p, float t, size_t min_keep, ui
     seed_cur(get_rng_seed(seed)),
     rng(seed_cur) {}
 
-constexpr void SamplerUnit<SamplerType::XTC>::apply_impl(llama_token_data_array * cur_p) {
+void SamplerUnit<SamplerType::XTC>::apply_impl(llama_token_data_array * cur_p) {
     if (probability <= 0.0f || threshold > 0.5f || cur_p->size < 2) {
         return;
     }
@@ -711,7 +711,16 @@ constexpr void SamplerUnit<SamplerType::XTC>::apply_impl(llama_token_data_array 
     }
 }
 
-constexpr void SamplerUnit<SamplerType::XTC>::reset() {
+void SamplerUnit<SamplerType::XTC>::reset() {
     seed_cur = get_rng_seed(seed);
     rng.seed(seed_cur);
 }
+
+expr_common_sampler::expr_common_sampler(const llama_model * model) :
+    grmr([](const llama_model * model) -> const llama_sampler * {
+        const llama_vocab *    vocab = llama_model_get_vocab(model);
+        struct llama_sampler * grmr  = llama_sampler_init_grammar(vocab, "", "root");
+        return grmr;
+    }(model)),
+    cur{},
+    cur_p{} {}

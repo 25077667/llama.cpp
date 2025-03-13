@@ -75,7 +75,7 @@ template <typename Derived> struct SamplerBase : public ISamplerUnit {
 
 //---------------------------------------------------------------------
 // Forward declaration of SamplerUnit specializations.
-template <SamplerType T, typename Derived = void> class SamplerUnit;  // Primary template not defined.
+template <SamplerType T> class SamplerUnit;  // Primary template not defined.
 
 //---------------------------------------------------------------------
 // Example sampler units:
@@ -120,7 +120,7 @@ template <> class SamplerUnit<SamplerType::DRY> : public SamplerBase<SamplerUnit
 template <> class SamplerUnit<SamplerType::TOP_K> : public SamplerBase<SamplerUnit<SamplerType::TOP_K>> {
     const uint32_t k_ = 40;
 
-    constexpr void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
 
   public:
     constexpr SamplerUnit(uint32_t k) noexcept : k_(k) {}
@@ -182,7 +182,7 @@ template <> class SamplerUnit<SamplerType::GRAMMAR> : public SamplerBase<Sampler
 
 // SOFTMAX: applies a softmax operation.
 template <> class SamplerUnit<SamplerType::SOFTMAX> : public SamplerBase<SamplerUnit<SamplerType::SOFTMAX>> {
-    constexpr static void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
 
   public:
     constexpr SamplerUnit() noexcept {}
@@ -199,14 +199,14 @@ template <> class SamplerUnit<SamplerType::DIST> : public SamplerBase<SamplerUni
 
     std::mt19937 rng;
 
-    inline void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
 
   public:
     SamplerUnit(uint32_t seed) noexcept;
 
     constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
-    constexpr void reset() override;
+    void reset() override;
 
     constexpr const char * getName() const override { return "Dist"; }
 };
@@ -233,7 +233,7 @@ template <> class SamplerUnit<SamplerType::TYPICAL_P> : public SamplerBase<Sampl
     const float  p;
     const size_t min_keep;
 
-    constexpr void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
   public:
     constexpr SamplerUnit(float typical_p, size_t min_keep) noexcept : p(typical_p), min_keep(min_keep) {}
 
@@ -247,7 +247,7 @@ template <> class SamplerUnit<SamplerType::TOP_P> : public SamplerBase<SamplerUn
     const float  p;
     const size_t min_keep;
 
-    constexpr void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
 
   public:
     constexpr SamplerUnit(float top_p, size_t min_keep) noexcept : p(top_p), min_keep(min_keep) {}
@@ -262,7 +262,7 @@ template <> class SamplerUnit<SamplerType::MIN_P> : public SamplerBase<SamplerUn
     const float  p;
     const size_t min_keep;
 
-    constexpr void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
   public:
     SamplerUnit(float min_p, size_t min_keep) noexcept : p(min_p), min_keep(min_keep) {}
 
@@ -275,7 +275,7 @@ template <> class SamplerUnit<SamplerType::MIN_P> : public SamplerBase<SamplerUn
 template <> class SamplerUnit<SamplerType::TEMPERATURE> : public SamplerBase<SamplerUnit<SamplerType::TEMPERATURE>> {
     const float temp;
 
-    constexpr void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
 
   public:
     constexpr SamplerUnit(float temp) noexcept : temp(temp) {}
@@ -295,13 +295,13 @@ template <> class SamplerUnit<SamplerType::XTC> : public SamplerBase<SamplerUnit
 
     std::mt19937 rng;
 
-    constexpr void apply_impl(llama_token_data_array * cur_p);
+    void apply_impl(llama_token_data_array * cur_p);
   public:
     SamplerUnit(float p, float t, size_t min_keep, uint32_t seed) noexcept;
 
     constexpr void apply(llama_token_data_array * cur_p) override { apply_impl(cur_p); }
 
-    constexpr void reset() override;
+    void reset() override;
 
     constexpr const char * getName() const override { return "XTC"; }
 };
@@ -318,22 +318,23 @@ template <typename LHS, typename RHS> struct SamplerCompose {
         rhs.apply(cur_p);
     }
 
-    constexpr void accept(llama_token token) const {
+    void accept(llama_token token) {
         lhs.accept(token);
         rhs.accept(token);
     }
+
+    constexpr void reset() const {
+        lhs.reset();
+        rhs.reset();
+    }
+
+    static void print_chain() {}
 };
 
 // Overload operator| to compose sampler expressions.
 template <typename LHS, typename RHS> constexpr auto operator|(const LHS & lhs, const RHS & rhs) {
     return SamplerCompose<LHS, RHS>{ lhs, rhs };
 }
-
-//---------------------------------------------------------------------
-// Identity sampler lambda: returns its input unmodified.
-auto IdentitySampler = [](auto chain) {
-    return chain;
-};
 
 //---------------------------------------------------------------------
 // Runtime SamplerChain (for dynamic polymorphism).
@@ -357,6 +358,12 @@ class SamplerChain {
         }
     }
 };
+
+// Print SamplerCompose chain.
+template <typename LHS, typename RHS> void print_chain(const SamplerCompose<LHS, RHS> & chain) {
+    std::cout << "Sampler Chain Units:\n";
+    chain.print_chain();
+}
 
 //---------------------------------------------------------------------
 // Test Cases
@@ -386,14 +393,14 @@ struct CommonSamplingParams {
     static constexpr int32_t dry_penalty_last_n = -1;
 };
 
-void *                                             model                       = nullptr;  // Dummy model pointer.
-void *                                             grammar                     = nullptr;  // Dummy grammar pointer.
+inline void *                                      model                       = nullptr;  // Dummy model pointer.
+inline void *                                      grammar                     = nullptr;  // Dummy grammar pointer.
 static constexpr std::array<std::string_view, 4>   dry_sequence_breakers_array = { "\n", ":", "\"", "*" };
 static constexpr std::span<const std::string_view> dry_sequence_breakers       = dry_sequence_breakers_array;
 
 //--- 1. Case: temp < 0.0 ---
 // Chain: Penalties, Grammar, Softmax, then Distribution.
-auto filter_stack_temp_negative =
+inline auto filter_stack_temp_negative =
     SamplerUnit<SamplerType::PENALTIES>(CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
                                         CommonSamplingParams::frequency_penalty,
                                         CommonSamplingParams::presence_penalty) |
@@ -401,15 +408,16 @@ auto filter_stack_temp_negative =
     SamplerUnit<SamplerType::DIST>(CommonSamplingParams::seed);
 //--- 2. Case: temp == 0.0 ---
 // Chain: Penalties, Grammar, then Greedy selection.
-auto filter_stack_temp_zero = SamplerUnit<SamplerType::PENALTIES>(
-                                  CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
-                                  CommonSamplingParams::frequency_penalty, CommonSamplingParams::presence_penalty) |
-                              SamplerUnit<SamplerType::GRAMMAR>(model, grammar) | SamplerUnit<SamplerType::GREEDY>();
+inline auto filter_stack_temp_zero =
+    SamplerUnit<SamplerType::PENALTIES>(CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
+                                        CommonSamplingParams::frequency_penalty,
+                                        CommonSamplingParams::presence_penalty) |
+    SamplerUnit<SamplerType::GRAMMAR>(model, grammar) | SamplerUnit<SamplerType::GREEDY>();
 
 //--- 3. Case: temp > 0.0 ---
 // Chain: Penalties, Grammar, Top-K, Typical-P, Top-P, Min-P,
 // Temperature scaling, and Distribution.
-auto filter_stack_temp_positive =
+inline auto filter_stack_temp_positive =
     SamplerUnit<SamplerType::PENALTIES>(CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
                                         CommonSamplingParams::frequency_penalty,
                                         CommonSamplingParams::presence_penalty) |
@@ -422,7 +430,7 @@ auto filter_stack_temp_positive =
 
 //--- 4. Case: example common filter stack ---
 // Chain: Penalties, DRY, Top-K, Typical-P, Top-P, Min-P, XTC, Temperature
-auto filter_stack_example_common =
+inline auto filter_stack_example_common =
     SamplerUnit<SamplerType::PENALTIES>(CommonSamplingParams::last_n_tokens_size, CommonSamplingParams::repeat_penalty,
                                         CommonSamplingParams::frequency_penalty,
                                         CommonSamplingParams::presence_penalty) |
@@ -437,5 +445,35 @@ auto filter_stack_example_common =
     SamplerUnit<SamplerType::XTC>(CommonSamplingParams::xtc_probability, CommonSamplingParams::xtc_threshold,
                                   CommonSamplingParams::min_keep, CommonSamplingParams::seed) |
     SamplerUnit<SamplerType::TEMPERATURE>(CommonSamplingParams::temp);
+
+struct expr_common_sampler {
+    const struct llama_sampler *            grmr;
+    decltype(filter_stack_example_common) & chain = filter_stack_example_common;
+
+    fixed_ring_buffer<llama_token, 64> prev;
+
+    std::vector<llama_token_data> cur;
+
+    llama_token_data_array cur_p;
+
+    void set_logits(struct llama_context * ctx, int idx) {
+        const auto * logits = llama_get_logits_ith(ctx, idx);
+
+        const llama_model * model = llama_get_model(ctx);
+        const llama_vocab * vocab = llama_model_get_vocab(model);
+
+        const int n_vocab = llama_vocab_n_tokens(vocab);
+
+        cur.resize(n_vocab);
+
+        for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
+            cur[token_id] = llama_token_data{ token_id, logits[token_id], 0.0f };
+        }
+
+        cur_p = { cur.data(), cur.size(), -1, false };
+    }
+
+    expr_common_sampler(const struct llama_model * model);
+};
 
 #endif  // __SCC_EXAMPLE_MAIN_EXPR_TEMP_SAMPLER_HPP__

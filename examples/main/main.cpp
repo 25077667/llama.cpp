@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "expr_temp_sampler.hpp"
+
 #if defined (__unix__) || (defined (__APPLE__) && defined (__MACH__))
 #include <signal.h>
 #include <unistd.h>
@@ -91,8 +93,6 @@ int main(int argc, char ** argv) {
     }
 
     common_init();
-
-    auto & sparams = params.sampling;
 
     // save choice to use color for later
     // (note for later: this is a slightly awkward choice)
@@ -462,15 +462,16 @@ int main(int argc, char ** argv) {
         }
     }
 
-    smpl = common_sampler_init(model, sparams);
-    if (!smpl) {
-        LOG_ERR("%s: failed to initialize sampling subsystem\n", __func__);
-        return 1;
-    }
+    // smpl = common_sampler_init(model, sparams);
+    // if (!smpl) {
+    //     LOG_ERR("%s: failed to initialize sampling subsystem\n", __func__);
+    //     return 1;
+    // }
 
     // LOG_INF("sampler seed: %u\n",     common_sampler_get_seed(smpl));
-    LOG_INF("sampler params: \n%s\n", sparams.print().c_str());
-    LOG_INF("sampler chain: %s\n", common_sampler_print(smpl).c_str());  // TODO: use our print_chain
+    // LOG_INF("sampler params: \n%s\n", sparams.print().c_str());
+    // LOG_INF("sampler chain: %s\n", common_sampler_print(smpl).c_str());
+    print_chain(filter_stack_example_common);
 
     LOG_INF("generate: n_ctx = %d, n_batch = %d, n_predict = %d, n_keep = %d\n", n_ctx, params.n_batch, params.n_predict, params.n_keep);
 
@@ -699,9 +700,11 @@ int main(int argc, char ** argv) {
                 LOG_DBG("saved session to %s\n", path_session.c_str());
             }
 
-            const llama_token id = common_sampler_sample(smpl, ctx, -1);
+            // const llama_token id = common_sampler_sample(smpl, ctx, -1);
+            const llama_token id = {};
 
-            common_sampler_accept(smpl, id, /* accept_grammar= */ true);
+            // common_sampler_accept(smpl, id, /* accept_grammar= */ true);
+            filter_stack_example_common.accept(id);
 
             embd.push_back(id);
 
@@ -720,9 +723,10 @@ int main(int argc, char ** argv) {
 
                 // push the prompt in the sampling context in order to apply repetition penalties later
                 // for the prompt, we don't apply grammar rules
-                common_sampler_accept(smpl, embd_inp[n_consumed], /* accept_grammar= */ false);
+                // common_sampler_accept(smpl, embd_inp[n_consumed], /* accept_grammar= */ false);
+                filter_stack_example_common.accept(embd_inp[n_consumed]);
 
-                ++n_consumed;
+                    ++ n_consumed;
                 if ((int) embd.size() >= params.n_batch) {
                     break;
                 }
