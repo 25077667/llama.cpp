@@ -313,7 +313,7 @@ template <typename LHS, typename RHS> struct SamplerCompose {
     LHS lhs;
     RHS rhs;
 
-    constexpr void apply(llama_token_data_array * cur_p) const {
+    void apply(llama_token_data_array * cur_p) {
         lhs.apply(cur_p);
         rhs.apply(cur_p);
     }
@@ -323,7 +323,7 @@ template <typename LHS, typename RHS> struct SamplerCompose {
         rhs.accept(token);
     }
 
-    constexpr void reset() const {
+    void reset() {
         lhs.reset();
         rhs.reset();
     }
@@ -447,8 +447,8 @@ inline auto filter_stack_example_common =
     SamplerUnit<SamplerType::TEMPERATURE>(CommonSamplingParams::temp);
 
 struct expr_common_sampler {
-    const struct llama_sampler *            grmr;
-    decltype(filter_stack_example_common) & chain = filter_stack_example_common;
+    struct llama_sampler *                grmr;
+    decltype(filter_stack_example_common) chain = filter_stack_example_common;
 
     fixed_ring_buffer<llama_token, 64> prev;
 
@@ -474,6 +474,12 @@ struct expr_common_sampler {
     }
 
     expr_common_sampler(const struct llama_model * model);
+
+    llama_token sample(llama_context * ctx, int idx, bool grammar_first = false);
+
+    std::string prev_str(llama_context * ctx_main, int n);
+
+    llama_token last() { return prev.rat(0); }
 };
 
 #endif  // __SCC_EXAMPLE_MAIN_EXPR_TEMP_SAMPLER_HPP__

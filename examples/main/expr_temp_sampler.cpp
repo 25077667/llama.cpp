@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common.h"
 #include "llama-vocab.h"
 #include "llama.h"
 #include "ring_buffer.hpp"
@@ -717,10 +718,65 @@ void SamplerUnit<SamplerType::XTC>::reset() {
 }
 
 expr_common_sampler::expr_common_sampler(const llama_model * model) :
-    grmr([](const llama_model * model) -> const llama_sampler * {
-        const llama_vocab *    vocab = llama_model_get_vocab(model);
-        struct llama_sampler * grmr  = llama_sampler_init_grammar(vocab, "", "root");
-        return grmr;
+    grmr([](const llama_model * model) -> llama_sampler * {
+        const llama_vocab * vocab = llama_model_get_vocab(model);
+        return llama_sampler_init_grammar(vocab, "", "root");
     }(model)),
     cur{},
     cur_p{} {}
+
+llama_token expr_common_sampler::sample(llama_context * ctx, int idx, bool grammar_first) {
+    this->set_logits(ctx, idx);
+
+    if (grammar_first && this->grmr) {
+        llama_sampler_apply(this->grmr, &cur_p);
+    }
+
+    chain.apply(&cur_p);
+
+    const llama_token id = cur_p.data[cur_p.selected].id;
+    if (grammar_first && this->grmr) {
+        return id;
+    }
+
+    {
+        llama_token_data       single_token_data       = { id, 1.0f, 0.0f };
+        llama_token_data_array single_token_data_array = { &single_token_data, 1, -1, false };
+
+        llama_sampler_apply(grmr, &single_token_data_array);
+
+        const bool is_valid = single_token_data_array.data[0].logit != -INFINITY;
+        if (is_valid) {
+            return id;
+        }
+    }
+
+    // resampling:
+    // if the token is not valid, sample again, but first apply the grammar sampler and then the sampling chain
+    this->set_logits(ctx, idx);
+
+    llama_sampler_apply(grmr, &cur_p);
+    chain.apply(&cur_p);
+
+    return cur_p.data[cur_p.selected].id;
+}
+
+std::string expr_common_sampler::prev_str(llama_context * ctx_main, int n) {
+    n = std::min(n, (int) this->prev.size());
+    if (n <= 0) {
+        return "";
+    }
+
+    std::string result;
+    result.reserve(8 * n);  // 8 is the average length of a token [citation needed], TODO: compute this from the vocab
+
+    for (int i = n - 1; i >= 0; i--) {
+        const llama_token id = prev.rat(i);
+
+        GGML_ASSERT(id != LLAMA_TOKEN_NULL && "null token in the sampling history - should not happen");
+
+        result += common_token_to_piece(ctx_main, id);
+    }
+
+    return result;
+}
